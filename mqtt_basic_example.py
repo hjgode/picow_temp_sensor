@@ -1,5 +1,6 @@
 import micropython
 from mqtt import MQTTClient
+from time import sleep
 
 
 def puback_cb(msg_id):
@@ -32,4 +33,4 @@ while True:
     except Exception as e:
       print(e)
 
-  utime.sleep_ms(1000)
+  sleep(1)
