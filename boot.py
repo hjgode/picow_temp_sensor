@@ -5,6 +5,7 @@ import config # SSID etc. importieren
 from time import sleep
 import rp2
 import sys
+from picozero import pico_temp_sensor, pico_led
 
 def do_connect():
     import network
@@ -24,8 +25,12 @@ gc.collect()
 autorun=True
 print("Press BootSel Button witin 10 Seconds to stop autostart")
 for i in range(0,10,1):
-    sleep(1)
-    print (".")
+#    sleep(1)
+    pico_led.on()
+    sleep(0.5)
+    pico_led.off()
+    sleep(0.5)
+    print (".", end='')
     if rp2.bootsel_button() == 1:
 #        sys.exit()
         autorun=False
@@ -34,3 +39,4 @@ if autorun:
     import webserver
 else:
     print ("no autorun")
+    
