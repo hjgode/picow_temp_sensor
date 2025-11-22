@@ -2,12 +2,25 @@ import network
 import socket
 from time import sleep
 
-from picozero import pico_led
+USE_ESP32=True # use picoW or esp32?
+
+if USE_ESP32:
+    deviceType='ESP32'
+else:
+    deviceType='RP2040'
+sensorName="sensor2"
+
 import machine # only on raspberry pico w or m5core
-import rp2
+
+if not USE_ESP32:
+    from picozero import pico_led
+    import rp2
+else:
+    import esp
 
 import sys
 import io
+from machine import WDT
 
 # forked from: https://github.com/micropython/micropython-lib/tree/master/micropython/umqtt.robust
 import utime
@@ -16,17 +29,33 @@ from mqtt import MQTTClient
 
 import ntptime
 
-from machine import Pin, I2C
-import SI7021
+if USE_ESP32:
+    from machine import Pin, I2C
+    import SI7021
 
-sdaPIN=machine.Pin(0)
-sclPIN=machine.Pin(1)
-i2c_bus = 0
-addr = 0x40
+    sdaPIN=machine.Pin(21)
+    sclPIN=machine.Pin(22)
+    i2c_bus = 0
+    addr = 0x40
 
-i2c=machine.I2C(i2c_bus, sda=sdaPIN, scl=sclPIN, freq=400000)
-si = SI7021.SI7021(i2c, addr)
+    i2c=machine.I2C(i2c_bus, sda=sdaPIN, scl=sclPIN, freq=400000)
+    si = SI7021.SI7021(i2c, addr)
+else:
+    from machine import Pin
+    from machine import Pin, I2C
+    try:
+        import SI7021
 
+        sdaPIN=machine.Pin(21) #esp8266 Pin(4)
+        sclPIN=machine.Pin(22) #esp8266 Pin(5)
+        i2c_bus = 0
+        addr = 0x40
+
+        i2c=machine.I2C(i2c_bus, sda=sdaPIN, scl=sclPIN, freq=400000)
+        si = SI7021.SI7021(i2c, addr)
+    except Exception as e:
+        print('Error:', e)
+        sys.print_exception(e)
 
 ssid = 'Horst1'
 password = '1234567890123'
@@ -39,30 +68,41 @@ MQTT_PASSWORD = b''
 MQTT_KEEPALIVE = 7200
 
 # Constants for MQTT Topics
-MQTT_TOPIC_TEMPERATURE = 'pico/sensor1/temperature'
+MQTT_TOPIC_TEMPERATURE = 'pico/' + sensorName + '/temperature'
 #MQTT_TOPIC_PRESSURE = 'pico/pressure'
-MQTT_TOPIC_HUMIDITY = 'pico/sensor1/humidity'
-MQTT_TOPIC_TIMESTAMP = 'pico/sensor1/timestamp'
+MQTT_TOPIC_HUMIDITY = 'pico/' + sensorName + '/humidity'
+MQTT_TOPIC_TIMESTAMP = 'pico/' + sensorName + '/timestamp'
+MQTT_TOPIC_IP = 'pico/' + sensorName + '/ip'
+MQTT_TOPIC_DEVICE = 'pico/' + sensorName + '/device'
 
 MQTT_CLIENT_ID = b"raspberrypi_picow"
-
-# Constants from the RP2040 datasheet
-VREF = 3.3  # Reference voltage for the ADC
-ADC_RESOLUTION = 65535  # 16-bit ADC resolution
-TEMPERATURE_SLOPE = -1.721  # Slope for temperature conversion (datasheet)
-TEMPERATURE_OFFSET = 27  # Temperature offset at 0.706V (datasheet)
-# Initialize ADC for the temperature sensor (ADC4)
-temp_sensor = machine.ADC(4)
-MQTT_TOPIC_CPU_TEMPERATURE = 'pico/rp2040_1/temperature'
       
+if USE_ESP32:
+    led = Pin(2, Pin.OUT)
+    BUTTON_PIN = 0 #GPIO00
+    button = Pin(BUTTON_PIN, Pin.IN, Pin.PULL_UP)
+    button_state = button.value()
+    print("button value={button_state}")
+    
 def readCPUtemp():
-    # Read the raw ADC value
-    raw_value = temp_sensor.read_u16()
-    # Convert raw value to voltage
-    voltage = (raw_value / ADC_RESOLUTION) * VREF
-    # Calculate temperature in Celsius using the RP2040 formula
-    temperature_celsius = TEMPERATURE_OFFSET - (voltage - 0.706) / TEMPERATURE_SLOPE
-    return round(temperature_celsius)
+    if not USE_ESP32:
+        # Read the raw ADC value
+        raw_value = temp_sensor.read_u16()
+        # Convert raw value to voltage
+        voltage = (raw_value / ADC_RESOLUTION) * VREF
+        # Calculate temperature in Celsius using the RP2040 formula
+        temperature_celsius = TEMPERATURE_OFFSET - (voltage - 0.706) / TEMPERATURE_SLOPE
+        # Constants from the RP2040 datasheet
+        VREF = 3.3  # Reference voltage for the ADC
+        ADC_RESOLUTION = 65535  # 16-bit ADC resolution
+        TEMPERATURE_SLOPE = -1.721  # Slope for temperature conversion (datasheet)
+        TEMPERATURE_OFFSET = 27  # Temperature offset at 0.706V (datasheet)
+        # Initialize ADC for the temperature sensor (ADC4)
+        temp_sensor = machine.ADC(4)
+        MQTT_TOPIC_CPU_TEMPERATURE = 'pico/' + sensorName + '/cpu_temperature'
+        #endif
+        return round(temperature_celsius)
+    return 0
 
 def readTemp():
     temperature = si.temperature
@@ -109,6 +149,17 @@ def publish_mqtt(topic, value):
       print(e)
     client.publish(topic, value, True, 1)
 
+def blinkLED():
+    if not USE_ESP32:
+        pico_led.on()
+    else:
+        led.value(1)
+    sleep(0.5)
+    if not USE_ESP32:
+        pico_led.off()
+    else:
+        led.value(2)
+    sleep(0.5)
 
 def connect():
     #Connect to WLAN
@@ -117,14 +168,14 @@ def connect():
     wlan.connect(ssid, password)
     
     while wlan.isconnected() == False:
-        if rp2.bootsel_button() == 1:
-            sys.exit()
+        if not USE_ESP32:
+            if rp2.bootsel_button() == 1:
+                sys.exit()
+        else:
+            if button.value == 1:
+                sys.exit()
         print('Waiting for connection...')
-        pico_led.on()
-        sleep(0.5)
-        pico_led.off()
-        sleep(0.5)
-    
+        blinkLED()    
     ip = wlan.ifconfig()[0]
     print(f'connect(): Connected on {ip}')
     
@@ -142,7 +193,7 @@ def getTimeStr():
 
 ip = connect()
 
-
+wdt = WDT(timeout=8000)  # enable watchdog with a timeout of 8s
 
 try:
     client = MQTTClient(MQTT_SERVER, port=MQTT_PORT)
@@ -162,9 +213,11 @@ except Exception as e:
         print(f"Failed to log exception: {e}")
    
 try:
+    publish_mqtt(MQTT_TOPIC_DEVICE, deviceType)
+    publish_mqtt(MQTT_TOPIC_IP, str(ip))
     # Connect to MQTT broker, start MQTT client
     while True:
-        ntptime.settime()
+#        ntptime.settime()
         # Read sensor data
         #temperature, humidity, pressure = get_sensor_readings()
         temperature,humidity=readTemp()
@@ -174,24 +227,28 @@ try:
 #        publish_mqtt(MQTT_TOPIC_PRESSURE, str(pressure))
         publish_mqtt(MQTT_TOPIC_HUMIDITY, str(humidity))
 
-        cpuTemp=readCPUtemp()
-        publish_mqtt( MQTT_TOPIC_CPU_TEMPERATURE, str(cpuTemp))
+        if not USE_ESP32:
+            cpuTemp=readCPUtemp()
+            publish_mqtt( MQTT_TOPIC_CPU_TEMPERATURE, str(cpuTemp))
         
-        timeStr=getTimeStr()
-        publish_mqtt( MQTT_TOPIC_TIMESTAMP, timeStr)
+#        timeStr=getTimeStr()
+#        publish_mqtt( MQTT_TOPIC_TIMESTAMP, timeStr)
         
         # Delay 10 seconds
         for i in range (0, 300, 1):
             # blink LED all 30 seconds
             if i % 30 == 0:
-                pico_led.on()
-                sleep(0.5)
-                pico_led.off()
-                sleep(0.5)
+                blinkLED()
             else:
                 sleep(1)
-            if rp2.bootsel_button() == 1:
-                sys.exit()
+            wdt.feed() #reset watchdog timer
+            if not USE_ESP32:
+                #ifndef TEST
+                if rp2.bootsel_button() == 1:
+                    sys.exit()
+            else:
+                if button.value == 1:
+                    sys.exit()
 
 except Exception as e:
     print('Error:', e)
